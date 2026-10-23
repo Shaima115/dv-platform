@@ -156,7 +156,6 @@ sequenceDiagram
 
 ```
 dv-platform/
-├── CLAUDE.md                     engineering rules for coding agents and contributors
 ├── README.md
 ├── package.json                  npm workspaces + every command
 ├── ecosystem.config.js           PM2: 3 APIs + 2 relays
