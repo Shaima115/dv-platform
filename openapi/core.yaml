@@ -1,0 +1,418 @@
+openapi: 3.1.0
+info:
+  title: DV core service
+  version: 1.0.0
+  description: |
+    Companies, memberships and the company verification state machine
+    (`draft → pending → approved | rejected`). Public endpoints are reached through the Nginx public
+    listener and accept **user tokens** only (Keycloak realm `jo`, client `web`, audience `svc-core`).
+    Internal endpoints are reached through `svc-core.internal` and accept **service tokens** only.
+    Every response echoes `x-request-id`; send `traceparent` (W3C) to continue a trace.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Public listener (development)
+  - url: http://svc-core.internal
+    description: Internal listener (private network only)
+security:
+  - userToken: []
+tags:
+  - name: companies
+  - name: me
+  - name: internal
+  - name: operations
+paths:
+  /api/v1/companies:
+    post:
+      tags: [companies]
+      operationId: createCompany
+      summary: Create a company in draft; the caller becomes its owner
+      description: >
+        One transaction creates the caller's user account (first sighting), the company, the owner
+        membership and a `dv.jo.core.company_created.v1` outbox row.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCompany' }
+      responses:
+        '201':
+          {
+            description: Created,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Company' } } },
+          }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/companies/{id}:
+    get:
+      tags: [companies]
+      operationId: getCompany
+      summary: Read a company the caller is a member of
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          {
+            description: OK,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Company' } } },
+          }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          {
+            description: The company does not exist or the caller is not a member (`COMPANY_NOT_FOUND`),
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/companies/{id}/verification:
+    post:
+      tags: [companies]
+      operationId: requestVerification
+      summary: Request verification (owner or representative)
+      description: >
+        Calls the verification service through the Nginx internal listener with a service token,
+        a per-attempt timeout of 2 s, at most 2 retries and the same Idempotency-Key on every retry,
+        inside a circuit breaker. On success the company moves to `pending`. If verification is down or
+        the circuit is open the company stays `draft` and the answer is 503.
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+      responses:
+        '202':
+          {
+            description: Accepted; the company is pending,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Company' } } },
+          }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          {
+            description: The caller is a member without the owner or representative role (`FORBIDDEN_ACTION`),
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '404':
+          {
+            description: Not found or not a member (`COMPANY_NOT_FOUND`),
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          description: >
+            `COMPANY_INVALID_STATE_TRANSITION` (company is not draft),
+            `COMPANY_VERIFICATION_SUBMISSION_IN_PROGRESS` (a concurrent submission holds the claim) or
+            `VERIFICATION_ALREADY_PENDING` (verification refused).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '503':
+          description: '`VERIFICATION_UNAVAILABLE` or `VERIFICATION_CIRCUIT_OPEN`; the company stays draft.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /api/v1/companies/{id}/members:
+    post:
+      tags: [companies]
+      operationId: addMember
+      summary: Add a representative or employee (owner only)
+      description: Company roles are stored in `company_member`; they are never read from tokens.
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [userAccountId, role]
+              properties:
+                userAccountId: { type: string, format: uuid }
+                role: { type: string, enum: [representative, employee] }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  companyId: { type: string, format: uuid }
+                  userAccountId: { type: string, format: uuid }
+                  role: { type: string, enum: [owner, representative, employee] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          {
+            description: '`COMPANY_NOT_FOUND` or `USER_ACCOUNT_NOT_FOUND`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: '`COMPANY_MEMBER_ALREADY_EXISTS`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/me:
+    get:
+      tags: [me]
+      operationId: getMe
+      summary: The caller's account (created on first sight) and platform roles
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userAccountId: { type: string, format: uuid }
+                  subject: { type: string, description: Keycloak subject }
+                  platformRoles: { type: array, items: { type: string, enum: [reviewer, admin] } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/me/companies:
+    get:
+      tags: [me]
+      operationId: listMyCompanies
+      summary: Companies the caller belongs to, with their role
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 20 },
+          }
+        - {
+            name: offset,
+            in: query,
+            schema: { type: integer, minimum: 0, maximum: 10000, default: 0 },
+          }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        name: { type: string }
+                        countryCode: { type: string }
+                        status: { $ref: '#/components/schemas/CompanyStatus' }
+                        role: { type: string, enum: [owner, representative, employee] }
+                        createdAt: { type: string, format: date-time }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /internal/v1/events:
+    post:
+      tags: [internal]
+      operationId: receiveEvent
+      summary: Event inbox (svc-verification only)
+      description: >
+        Accepts `dv.jo.verification.completed.v1`. Writes `(consumer, event_id)` to `core.inbox_processed`
+        in the same transaction as the state change and answers 2xx only after commit. A duplicate
+        answers 200 with `status: duplicate`. A result that would move a final company backwards is
+        acknowledged with `outcome: ignored`.
+      security:
+        - serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerificationCompletedEvent' }
+      responses:
+        '200':
+          description: Processed or already processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event_id: { type: string, format: uuid }
+                  status: { type: string, enum: [processed, duplicate] }
+                  outcome: { type: string, enum: [applied, ignored] }
+        '400':
+          {
+            description: '`EVENT_INVALID` or `EVENT_UNSUPPORTED_TYPE`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          {
+            description: '`AUTH_WRONG_TOKEN_KIND` (user token) or `AUTH_CALLER_NOT_ALLOWED`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '404':
+          {
+            description: '`COMPANY_NOT_FOUND`; the relay retries',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: '`COMPANY_INVALID_STATE_TRANSITION` (e.g. a decision for a never-submitted draft)',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /health:
+    get:
+      tags: [operations]
+      operationId: health
+      security: []
+      summary: Process is up (internal listener only)
+      responses:
+        '200':
+          {
+            description: OK,
+            content:
+              {
+                application/json:
+                  { schema: { type: object, properties: { status: { const: ok } } } },
+              },
+          }
+  /ready:
+    get:
+      tags: [operations]
+      operationId: ready
+      security: []
+      summary: Database reachable (internal listener only)
+      responses:
+        '200':
+          {
+            description: Ready,
+            content:
+              {
+                application/json:
+                  { schema: { type: object, properties: { status: { const: ready } } } },
+              },
+          }
+        '503': { description: Not ready }
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Keycloak realm `jo`, client `web`, claim `token_kind=user`, audience `svc-core`.
+    serviceToken:
+      type: oauth2
+      description: Client credentials; claim `token_kind=service`; `azp` must be `svc-verification`.
+      flows:
+        clientCredentials:
+          tokenUrl: http://127.0.0.1:8180/realms/jo/protocol/openid-connect/token
+          scopes: {}
+  parameters:
+    CompanyId: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    RequestId:
+      {
+        name: x-request-id,
+        in: header,
+        required: false,
+        schema: { type: string, pattern: '^[A-Za-z0-9._:-]{8,128}$' },
+      }
+    Traceparent:
+      {
+        name: traceparent,
+        in: header,
+        required: false,
+        schema: { type: string, pattern: '^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$' },
+      }
+  responses:
+    BadRequest:
+      {
+        description: '`VALIDATION_FAILED`',
+        content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+      }
+    Unauthorized:
+      {
+        description: '`AUTH_MISSING_TOKEN`, `AUTH_INVALID_TOKEN` or `AUTH_TOKEN_EXPIRED`',
+        content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+      }
+    Forbidden:
+      {
+        description: '`AUTH_WRONG_TOKEN_KIND` (service token on a public endpoint) or `FORBIDDEN_ACTION`',
+        content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+      }
+  schemas:
+    Error:
+      type: object
+      required: [statusCode, code, message]
+      properties:
+        statusCode: { type: integer }
+        code: { type: string, description: Stable machine-readable code }
+        message: { type: string }
+        requestId: { type: string }
+        details: { type: object }
+    CompanyStatus: { type: string, enum: [draft, pending, approved, rejected] }
+    CreateCompany:
+      type: object
+      additionalProperties: false
+      required: [name, countryCode]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 200 }
+        registrationNumber: { type: string, maxLength: 64 }
+        countryCode: { type: string, pattern: '^[A-Z]{2}$' }
+    Company:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        registrationNumber: { type: [string, 'null'] }
+        countryCode: { type: string }
+        status: { $ref: '#/components/schemas/CompanyStatus' }
+        verificationId: { type: [string, 'null'], format: uuid }
+        decisionReasonCode: { type: [string, 'null'] }
+        decidedAt: { type: [string, 'null'], format: date-time }
+        myRole: { type: string, enum: [owner, representative, employee] }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    EventEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          event_id,
+          event_type,
+          schema_version,
+          occurred_at,
+          country,
+          aggregate_id,
+          request_id,
+          traceparent,
+          data,
+        ]
+      properties:
+        event_id: { type: string, format: uuid, description: UUID v7 }
+        event_type:
+          {
+            type: string,
+            pattern: '^dv\.[a-z]{2}\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.v[1-9][0-9]*$',
+          }
+        schema_version: { type: integer, minimum: 1 }
+        occurred_at: { type: string, format: date-time }
+        country: { type: string, pattern: '^[a-z]{2}$' }
+        aggregate_id: { type: string, format: uuid }
+        request_id: { type: string }
+        traceparent: { type: string }
+        data: { type: object }
+    VerificationCompletedEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            event_type: { const: dv.jo.verification.completed.v1 }
+            data:
+              type: object
+              additionalProperties: false
+              required: [verification_id, company_id, decision, reason_code]
+              properties:
+                verification_id: { type: string, format: uuid }
+                company_id: { type: string, format: uuid }
+                decision: { type: string, enum: [approved, rejected] }
+                reason_code: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }

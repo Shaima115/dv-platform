@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@dv/shared": ["packages/shared/src/index.ts"],
+      "@dv/shared/*": ["packages/shared/src/*"]
+    },
+    "types": ["node", "jest"]
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "apps/*/src/**/*.ts",
+    "apps/*/test/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "tests/**/*.ts"
+  ]
+}

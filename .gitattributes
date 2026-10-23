@@ -1,0 +1,2 @@
+# Keep LF everywhere: Prettier expects it and the bash scripts break on CRLF.
+* text=auto eol=lf

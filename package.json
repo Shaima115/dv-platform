@@ -1,0 +1,53 @@
+{
+  "name": "dv-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DV platform assessment: core, verification and notification services with Keycloak identity, internal REST and a PostgreSQL outbox/relay/inbox.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "workspaces": [
+    "packages/shared",
+    "apps/core",
+    "apps/verification",
+    "apps/notification"
+  ],
+  "scripts": {
+    "build": "npm run build -w @dv/shared && npm run build -w @dv/core -w @dv/verification -w @dv/notification",
+    "clean": "rm -rf packages/*/dist apps/*/dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "jest --selectProjects unit",
+    "test:integration": "jest --selectProjects integration --runInBand",
+    "db:provision": "bash scripts/provision-db.sh",
+    "db:migrate": "node scripts/migrate.js",
+    "dead-letter:requeue": "node scripts/dead-letter-requeue.js",
+    "check:env": "bash scripts/check-environment.sh",
+    "start:pm2": "pm2 start ecosystem.config.js",
+    "start:pm2:debug": "pm2 delete ecosystem.config.js; pm2 start ecosystem.config.js --env debug",
+    "stop:pm2": "pm2 delete ecosystem.config.js",
+    "demo": "bash scripts/demo.sh",
+    "setup": "bash scripts/setup.sh",
+    "db:status": "node scripts/migrate.js --status"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.37.0",
+    "@types/express": "^5.0.6",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.18.0",
+    "@types/opossum": "^8.1.9",
+    "@types/pg": "^8.15.5",
+    "eslint": "^9.37.0",
+    "eslint-config-prettier": "^10.1.8",
+    "jest": "^29.7.0",
+    "prettier": "^3.6.2",
+    "ts-jest": "^29.4.4",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "yaml": "^2.9.1"
+  }
+}

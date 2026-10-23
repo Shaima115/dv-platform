@@ -1,0 +1,9 @@
+{
+  "producer": "core",
+  "subscriptions": {
+    "dv.jo.core.company_approved.v1": [
+      { "name": "notification", "url": "http://svc-notification.internal/internal/v1/events" }
+    ],
+    "dv.jo.core.company_created.v1": []
+  }
+}

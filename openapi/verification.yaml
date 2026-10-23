@@ -1,0 +1,210 @@
+openapi: 3.1.0
+info:
+  title: DV verification service
+  version: 1.0.0
+  description: |
+    Thin service: one table (`compliance.verification_request`), three endpoints. The internal API is
+    called only by core (service token, `azp=svc-core`) through `svc-verification.internal`. The admin
+    decision endpoint is public, needs a user token with the realm role `reviewer`, and records the
+    decision and a `dv.jo.verification.completed.v1` outbox row in one transaction.
+servers:
+  - url: http://svc-verification.internal
+    description: Internal listener
+  - url: http://127.0.0.1:8080
+    description: Public listener (admin decision only)
+paths:
+  /internal/v1/verifications:
+    post:
+      tags: [internal]
+      operationId: createVerificationRequest
+      summary: Open a verification request (idempotent)
+      description: >
+        `Idempotency-Key` is stored with a unique constraint per calling service. A repeated key with the
+        same body returns the original response (201, same body, header `idempotent-replayed: true`)
+        and creates nothing. The same key with a different body is 409 `IDEMPOTENCY_KEY_REUSED`.
+      security: [{ serviceToken: [] }]
+      parameters:
+        - {
+            name: idempotency-key,
+            in: header,
+            required: true,
+            schema: { type: string, pattern: '^[A-Za-z0-9_\-:.]{8,128}$' },
+          }
+        - { name: x-request-id, in: header, schema: { type: string } }
+        - { name: traceparent, in: header, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [company_id, requested_by_subject]
+              properties:
+                company_id: { type: string, format: uuid }
+                requested_by_subject:
+                  {
+                    type: string,
+                    maxLength: 64,
+                    description: Keycloak subject of the requesting user,
+                  }
+      responses:
+        '201':
+          description: Created, or the original response for a repeated key
+          headers:
+            idempotent-replayed: { schema: { type: string, enum: ['true'] } }
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/VerificationRequest' } } }
+        '400':
+          {
+            description: '`VALIDATION_FAILED` or `IDEMPOTENCY_KEY_REQUIRED`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          {
+            description: '`AUTH_WRONG_TOKEN_KIND` (user token) or `AUTH_CALLER_NOT_ALLOWED`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: '`IDEMPOTENCY_KEY_REUSED` or `VERIFICATION_ALREADY_PENDING`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /internal/v1/verifications/{id}:
+    get:
+      tags: [internal]
+      operationId: getVerificationRequest
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          {
+            description: OK,
+            content:
+              {
+                application/json: { schema: { $ref: '#/components/schemas/VerificationRequest' } },
+              },
+          }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          {
+            description: Not a service token from svc-core,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '404':
+          {
+            description: '`VERIFICATION_NOT_FOUND`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /api/v1/admin/verifications/{id}/decision:
+    post:
+      tags: [admin]
+      operationId: decideVerification
+      summary: Approve or reject (realm role `reviewer` only)
+      security: [{ userToken: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: x-request-id, in: header, schema: { type: string } }
+        - { name: traceparent, in: header, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision, reasonCode]
+              properties:
+                decision: { type: string, enum: [approved, rejected] }
+                reasonCode:
+                  {
+                    type: string,
+                    pattern: '^[a-z][a-z0-9_]{2,63}$',
+                    examples: [documents_valid, documents_invalid],
+                  }
+                comment:
+                  { type: string, maxLength: 500, description: Stored locally; never put in events }
+      responses:
+        '200':
+          {
+            description: Decided,
+            content:
+              {
+                application/json: { schema: { $ref: '#/components/schemas/VerificationRequest' } },
+              },
+          }
+        '400':
+          {
+            description: '`VALIDATION_FAILED`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          {
+            description: '`FORBIDDEN_ACTION` (not a reviewer) or `AUTH_WRONG_TOKEN_KIND`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '404':
+          {
+            description: '`VERIFICATION_NOT_FOUND`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '409':
+          {
+            description: '`VERIFICATION_ALREADY_DECIDED`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /health:
+    get: { operationId: health, security: [], responses: { '200': { description: Process up } } }
+  /ready:
+    get:
+      {
+        operationId: ready,
+        security: [],
+        responses:
+          { '200': { description: Database reachable }, '503': { description: Not ready } },
+      }
+components:
+  securitySchemes:
+    userToken:
+      {
+        type: http,
+        scheme: bearer,
+        bearerFormat: JWT,
+        description: 'Realm `jo`, client `web`, audience `svc-verification`',
+      }
+    serviceToken:
+      type: oauth2
+      description: Client credentials; `azp` must be `svc-core`; audience `svc-verification`.
+      flows:
+        {
+          clientCredentials:
+            { tokenUrl: http://127.0.0.1:8180/realms/jo/protocol/openid-connect/token, scopes: {} },
+        }
+  responses:
+    Unauthorized:
+      {
+        description: '`AUTH_MISSING_TOKEN`, `AUTH_INVALID_TOKEN` or `AUTH_TOKEN_EXPIRED`',
+        content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+      }
+  schemas:
+    Error:
+      type: object
+      required: [statusCode, code, message]
+      properties:
+        statusCode: { type: integer }
+        code: { type: string }
+        message: { type: string }
+        requestId: { type: string }
+        details: { type: object }
+    VerificationRequest:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        company_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, approved, rejected] }
+        decision_reason_code: { type: [string, 'null'] }
+        decided_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }

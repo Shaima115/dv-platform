@@ -1,0 +1,98 @@
+{
+  // Attach to the PM2 processes started with `npm run start:pm2:debug` (inspector ports in
+  // ecosystem.config.js). The processes run from the WSL copy at remoteRoot; breakpoints set in this
+  // workspace map onto it, so keep both copies on the same code and rebuild (`npm run build`) after edits.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach: dv-core (9229)",
+      "type": "node",
+      "request": "attach",
+      "address": "127.0.0.1",
+      "port": 9229,
+      "localRoot": "${workspaceFolder}",
+      "remoteRoot": "/home/shaimaalhijawi/dv-p",
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceFolder}/apps/*/dist/**/*.js",
+        "${workspaceFolder}/packages/*/dist/**/*.js"
+      ],
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
+      "restart": true
+    },
+    {
+      "name": "Attach: dv-verification (9230)",
+      "type": "node",
+      "request": "attach",
+      "address": "127.0.0.1",
+      "port": 9230,
+      "localRoot": "${workspaceFolder}",
+      "remoteRoot": "/home/shaimaalhijawi/dv-p",
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceFolder}/apps/*/dist/**/*.js",
+        "${workspaceFolder}/packages/*/dist/**/*.js"
+      ],
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
+      "restart": true
+    },
+    {
+      "name": "Attach: dv-notification (9231)",
+      "type": "node",
+      "request": "attach",
+      "address": "127.0.0.1",
+      "port": 9231,
+      "localRoot": "${workspaceFolder}",
+      "remoteRoot": "/home/shaimaalhijawi/dv-p",
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceFolder}/apps/*/dist/**/*.js",
+        "${workspaceFolder}/packages/*/dist/**/*.js"
+      ],
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
+      "restart": true
+    },
+    {
+      "name": "Attach: dv-core-relay (9232)",
+      "type": "node",
+      "request": "attach",
+      "address": "127.0.0.1",
+      "port": 9232,
+      "localRoot": "${workspaceFolder}",
+      "remoteRoot": "/home/shaimaalhijawi/dv-p",
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceFolder}/apps/*/dist/**/*.js",
+        "${workspaceFolder}/packages/*/dist/**/*.js"
+      ],
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
+      "restart": true
+    },
+    {
+      "name": "Attach: dv-verification-relay (9233)",
+      "type": "node",
+      "request": "attach",
+      "address": "127.0.0.1",
+      "port": 9233,
+      "localRoot": "${workspaceFolder}",
+      "remoteRoot": "/home/shaimaalhijawi/dv-p",
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceFolder}/apps/*/dist/**/*.js",
+        "${workspaceFolder}/packages/*/dist/**/*.js"
+      ],
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
+      "restart": true
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Attach: all three APIs",
+      "configurations": [
+        "Attach: dv-core (9229)",
+        "Attach: dv-verification (9230)",
+        "Attach: dv-notification (9231)"
+      ]
+    }
+  ]
+}

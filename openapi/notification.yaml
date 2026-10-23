@@ -1,0 +1,170 @@
+openapi: 3.1.0
+info:
+  title: DV notification service
+  version: 1.0.0
+  description: |
+    Thin service that consumes `dv.jo.core.company_approved.v1` (from core only) and stores one
+    notification per event and recipient. It logs instead of sending email.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Public listener
+  - url: http://svc-notification.internal
+    description: Internal listener
+paths:
+  /api/v1/notifications:
+    get:
+      operationId: listMyNotifications
+      summary: Notifications addressed to the caller
+      security: [{ userToken: [] }]
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 20 },
+          }
+        - {
+            name: offset,
+            in: query,
+            schema: { type: integer, minimum: 0, maximum: 10000, default: 0 },
+          }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        company_id: { type: string, format: uuid }
+                        message_code: { type: string, enum: [COMPANY_APPROVED] }
+                        event_id: { type: string, format: uuid }
+                        created_at: { type: string, format: date-time }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        '400':
+          {
+            description: '`VALIDATION_FAILED`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '401':
+          {
+            description: '`AUTH_MISSING_TOKEN`, `AUTH_INVALID_TOKEN` or `AUTH_TOKEN_EXPIRED`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '403':
+          {
+            description: '`AUTH_WRONG_TOKEN_KIND`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /internal/v1/events:
+    post:
+      operationId: receiveEvent
+      summary: Event inbox (svc-core only)
+      description: >
+        Writes `(consumer, event_id)` to `notification.inbox_processed` in the same transaction as the
+        notification row. Duplicates answer 200 with `status: duplicate` and no new row. A handler failure
+        rolls everything back and answers 500 so core's relay retries.
+      security: [{ serviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                [
+                  event_id,
+                  event_type,
+                  schema_version,
+                  occurred_at,
+                  country,
+                  aggregate_id,
+                  request_id,
+                  traceparent,
+                  data,
+                ]
+              properties:
+                event_type: { const: dv.jo.core.company_approved.v1 }
+                data:
+                  type: object
+                  additionalProperties: false
+                  required: [company_id, verification_id, owner_subject]
+                  properties:
+                    company_id: { type: string, format: uuid }
+                    verification_id: { type: string, format: uuid }
+                    owner_subject: { type: string, description: Keycloak subject of the recipient }
+      responses:
+        '200':
+          description: Processed or already processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event_id: { type: string }
+                  status: { type: string, enum: [processed, duplicate] }
+                  outcome: { type: string, enum: [applied, ignored] }
+        '400':
+          {
+            description: '`EVENT_INVALID` or `EVENT_UNSUPPORTED_TYPE`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '401':
+          {
+            description: Invalid token,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '403':
+          {
+            description: '`AUTH_WRONG_TOKEN_KIND` or `AUTH_CALLER_NOT_ALLOWED`',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+        '500':
+          {
+            description: Handler failed; nothing committed; the relay retries,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } },
+          }
+  /health:
+    get: { operationId: health, security: [], responses: { '200': { description: Process up } } }
+  /ready:
+    get:
+      {
+        operationId: ready,
+        security: [],
+        responses:
+          { '200': { description: Database reachable }, '503': { description: Not ready } },
+      }
+components:
+  securitySchemes:
+    userToken:
+      {
+        type: http,
+        scheme: bearer,
+        bearerFormat: JWT,
+        description: 'Realm `jo`, client `web`, audience `svc-notification`',
+      }
+    serviceToken:
+      type: oauth2
+      description: Client credentials; `azp` must be `svc-core`; audience `svc-notification`.
+      flows:
+        {
+          clientCredentials:
+            { tokenUrl: http://127.0.0.1:8180/realms/jo/protocol/openid-connect/token, scopes: {} },
+        }
+  schemas:
+    Error:
+      type: object
+      required: [statusCode, code, message]
+      properties:
+        statusCode: { type: integer }
+        code: { type: string }
+        message: { type: string }
+        requestId: { type: string }
+        details: { type: object }

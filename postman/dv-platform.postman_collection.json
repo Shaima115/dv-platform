@@ -1,0 +1,1372 @@
+{
+  "info": {
+    "name": "DV Platform",
+    "description": "Public API of the DV platform (core, verification, notification) behind Nginx, with Keycloak tokens.\n\nTokens for owner, reviewer and employee are fetched automatically by the collection pre-request script\nand refreshed before they expire. Select the \"DV Platform — local\" environment, then run folder 1.\n\nInternal endpoints (/internal/v1/*, /health, /ready) are only reachable on the 127.0.0.2 internal\nlistener inside WSL and are not included.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Fetches a password-grant token for each demo user and caches it until 15s before expiry.",
+          "const users = [",
+          "  { key: 'owner',    username: pm.variables.get('ownerUsername'),    password: pm.variables.get('ownerPassword') },",
+          "  { key: 'reviewer', username: pm.variables.get('reviewerUsername'), password: pm.variables.get('reviewerPassword') },",
+          "  { key: 'employee', username: pm.variables.get('employeeUsername'), password: pm.variables.get('employeePassword') },",
+          "];",
+          "const tokenUrl = pm.variables.get('keycloakUrl') + '/realms/' + pm.variables.get('realm') + '/protocol/openid-connect/token';",
+          "const now = Date.now();",
+          "",
+          "users.forEach((u) => {",
+          "  const exp = Number(pm.collectionVariables.get(u.key + 'TokenExp') || 0);",
+          "  if (pm.collectionVariables.get(u.key + 'Token') && exp - 15000 > now) return;",
+          "  pm.sendRequest({",
+          "    url: tokenUrl,",
+          "    method: 'POST',",
+          "    header: { 'content-type': 'application/x-www-form-urlencoded' },",
+          "    body: {",
+          "      mode: 'urlencoded',",
+          "      urlencoded: [",
+          "        { key: 'grant_type', value: 'password' },",
+          "        { key: 'client_id', value: pm.variables.get('clientId') },",
+          "        { key: 'username', value: u.username },",
+          "        { key: 'password', value: u.password },",
+          "      ],",
+          "    },",
+          "  }, (err, res) => {",
+          "    if (err || res.code !== 200) {",
+          "      console.error('token for ' + u.key + ' failed', err || res.text());",
+          "      return;",
+          "    }",
+          "    const body = res.json();",
+          "    pm.collectionVariables.set(u.key + 'Token', body.access_token);",
+          "    pm.collectionVariables.set(u.key + 'TokenExp', String(now + body.expires_in * 1000));",
+          "  });",
+          "});",
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "companyId",
+      "value": ""
+    },
+    {
+      "key": "verificationId",
+      "value": ""
+    },
+    {
+      "key": "rejectCompanyId",
+      "value": ""
+    },
+    {
+      "key": "rejectVerificationId",
+      "value": ""
+    },
+    {
+      "key": "membersCompanyId",
+      "value": ""
+    },
+    {
+      "key": "ownerAccountId",
+      "value": ""
+    },
+    {
+      "key": "employeeAccountId",
+      "value": ""
+    },
+    {
+      "key": "ownerToken",
+      "value": ""
+    },
+    {
+      "key": "ownerTokenExp",
+      "value": ""
+    },
+    {
+      "key": "reviewerToken",
+      "value": ""
+    },
+    {
+      "key": "reviewerTokenExp",
+      "value": ""
+    },
+    {
+      "key": "employeeToken",
+      "value": ""
+    },
+    {
+      "key": "employeeTokenExp",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Happy path — create, verify, approve, notify",
+      "description": "Run top to bottom (or with the Collection Runner). Each request stores the ids the next one needs.",
+      "item": [
+        {
+          "name": "Create company (owner)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Happy Path Co {{$timestamp}}\",\n  \"registrationNumber\": \"REG-{{$randomInt}}\",\n  \"countryCode\": \"JO\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "",
+                  "const company = pm.response.json();",
+                  "pm.test('starts as draft', () => pm.expect(company.status).to.eql('draft'));",
+                  "pm.collectionVariables.set('companyId', company.id);",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Request verification (owner)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies/{{companyId}}/verification",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies",
+                "{{companyId}}",
+                "verification"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 202', () => pm.response.to.have.status(202));",
+                  "",
+                  "",
+                  "const company = pm.response.json();",
+                  "pm.test('company is pending', () => pm.expect(company.status).to.eql('pending'));",
+                  "pm.collectionVariables.set('verificationId', company.verificationId);",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approve verification (reviewer)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{reviewerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/verifications/{{verificationId}}/decision",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "verifications",
+                "{{verificationId}}",
+                "decision"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"approved\",\n  \"reasonCode\": \"documents_valid\",\n  \"comment\": \"Checked manually in Postman\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "",
+                  "pm.test('verification approved', () => pm.expect(pm.response.json().status).to.eql('approved'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get company — approved (owner)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies/{{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies",
+                "{{companyId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const deadline = Date.now() + 15000;",
+                  "const url = pm.variables.get('baseUrl') + '/api/v1/companies/' + pm.collectionVariables.get('companyId');",
+                  "const auth = { authorization: 'Bearer ' + pm.collectionVariables.get('ownerToken') };",
+                  "(function poll() {",
+                  "  pm.sendRequest({ url, header: auth }, (err, res) => {",
+                  "    if (!err && res.code === 200 && res.json().status === 'approved') return;",
+                  "    if (Date.now() > deadline) return console.warn('company did not reach approved within 15s');",
+                  "    setTimeout(poll, 500);",
+                  "  });",
+                  "})();",
+                  ""
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "",
+                  "const company = pm.response.json();",
+                  "pm.test('company approved by the event', () => pm.expect(company.status).to.eql('approved'));",
+                  "pm.test('decision reason carried over', () => pm.expect(company.decisionReasonCode).to.eql('documents_valid'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My notifications (owner)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications?limit=10&offset=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "notifications"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const deadline = Date.now() + 15000;",
+                  "const url = pm.variables.get('baseUrl') + '/api/v1/notifications?limit=50';",
+                  "const auth = { authorization: 'Bearer ' + pm.collectionVariables.get('ownerToken') };",
+                  "const companyId = pm.collectionVariables.get('companyId');",
+                  "(function poll() {",
+                  "  pm.sendRequest({ url, header: auth }, (err, res) => {",
+                  "    if (!err && res.code === 200 && res.json().items.some((i) => i.company_id === companyId)) return;",
+                  "    if (Date.now() > deadline) return console.warn('no notification for the company within 15s');",
+                  "    setTimeout(poll, 500);",
+                  "  });",
+                  "})();",
+                  ""
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "",
+                  "const items = pm.response.json().items;",
+                  "pm.test('COMPANY_APPROVED notification for this company', () => {",
+                  "  const n = items.find((i) => i.company_id === pm.collectionVariables.get('companyId'));",
+                  "  pm.expect(n, 'notification').to.exist;",
+                  "  pm.expect(n.message_code).to.eql('COMPANY_APPROVED');",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Reject path",
+      "item": [
+        {
+          "name": "Create company (owner)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Reject Path Co {{$timestamp}}\",\n  \"registrationNumber\": \"REG-{{$randomInt}}\",\n  \"countryCode\": \"JO\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "pm.collectionVariables.set('rejectCompanyId', pm.response.json().id);",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Request verification (owner)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies/{{rejectCompanyId}}/verification",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies",
+                "{{rejectCompanyId}}",
+                "verification"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 202', () => pm.response.to.have.status(202));",
+                  "",
+                  "pm.collectionVariables.set('rejectVerificationId', pm.response.json().verificationId);",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject verification (reviewer)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{reviewerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/verifications/{{rejectVerificationId}}/decision",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "verifications",
+                "{{rejectVerificationId}}",
+                "decision"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"rejected\",\n  \"reasonCode\": \"documents_invalid\",\n  \"comment\": \"Registration document unreadable\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.test('verification rejected', () => pm.expect(pm.response.json().status).to.eql('rejected'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get company — rejected (owner)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies/{{rejectCompanyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies",
+                "{{rejectCompanyId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const deadline = Date.now() + 15000;",
+                  "const url = pm.variables.get('baseUrl') + '/api/v1/companies/' + pm.collectionVariables.get('rejectCompanyId');",
+                  "const auth = { authorization: 'Bearer ' + pm.collectionVariables.get('ownerToken') };",
+                  "(function poll() {",
+                  "  pm.sendRequest({ url, header: auth }, (err, res) => {",
+                  "    if (!err && res.code === 200 && res.json().status === 'rejected') return;",
+                  "    if (Date.now() > deadline) return console.warn('company did not reach rejected within 15s');",
+                  "    setTimeout(poll, 500);",
+                  "  });",
+                  "})();",
+                  ""
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.test('company rejected', () => pm.expect(pm.response.json().status).to.eql('rejected'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Accounts and members",
+      "item": [
+        {
+          "name": "Me (owner)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.collectionVariables.set('ownerAccountId', pm.response.json().userAccountId);",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Me (employee)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{employeeToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.collectionVariables.set('employeeAccountId', pm.response.json().userAccountId);",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Me (reviewer) — has reviewer role",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{reviewerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.test('platform role reviewer', () => pm.expect(pm.response.json().platformRoles).to.include('reviewer'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My companies (owner)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/me/companies?limit=20&offset=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "me",
+                "companies"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create company for members (owner)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Members Co {{$timestamp}}\",\n  \"registrationNumber\": \"REG-{{$randomInt}}\",\n  \"countryCode\": \"JO\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "pm.collectionVariables.set('membersCompanyId', pm.response.json().id);",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add employee (owner)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies/{{membersCompanyId}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies",
+                "{{membersCompanyId}}",
+                "members"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userAccountId\": \"{{employeeAccountId}}\",\n  \"role\": \"employee\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "pm.test('role employee', () => pm.expect(pm.response.json().role).to.eql('employee'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Employee sees the company",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{employeeToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies/{{membersCompanyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies",
+                "{{membersCompanyId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.test('myRole employee', () => pm.expect(pm.response.json().myRole).to.eql('employee'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Error cases",
+      "description": "Run folders 1 and 3 first: these reuse companyId, verificationId and membersCompanyId.",
+      "item": [
+        {
+          "name": "401 no token",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "noauth"
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/me/companies",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "me",
+                "companies"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code AUTH_MISSING_TOKEN', () => pm.expect(pm.response.json().code).to.eql('AUTH_MISSING_TOKEN'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 garbage token",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.bad",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/me/companies",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "me",
+                "companies"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code AUTH_INVALID_TOKEN', () => pm.expect(pm.response.json().code).to.eql('AUTH_INVALID_TOKEN'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 invalid company body",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"X\",\n  \"countryCode\": \"jordan\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code VALIDATION_FAILED', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_FAILED'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 reviewer reads a company they are not a member of",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{reviewerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies/{{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies",
+                "{{companyId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error code COMPANY_NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('COMPANY_NOT_FOUND'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "403 employee requests verification",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{employeeToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies/{{membersCompanyId}}/verification",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies",
+                "{{membersCompanyId}}",
+                "verification"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code FORBIDDEN_ACTION', () => pm.expect(pm.response.json().code).to.eql('FORBIDDEN_ACTION'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "403 owner calls the decision endpoint",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/verifications/{{verificationId}}/decision",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "verifications",
+                "{{verificationId}}",
+                "decision"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"approved\",\n  \"reasonCode\": \"documents_valid\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "409 decide an already decided verification",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{reviewerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/verifications/{{verificationId}}/decision",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "verifications",
+                "{{verificationId}}",
+                "decision"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"rejected\",\n  \"reasonCode\": \"documents_invalid\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('error code VERIFICATION_ALREADY_DECIDED', () => pm.expect(pm.response.json().code).to.eql('VERIFICATION_ALREADY_DECIDED'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "409 request verification for an approved company",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{ownerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/companies/{{companyId}}/verification",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "companies",
+                "{{companyId}}",
+                "verification"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('error code COMPANY_INVALID_STATE_TRANSITION', () => pm.expect(pm.response.json().code).to.eql('COMPANY_INVALID_STATE_TRANSITION'));",
+                  ""
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

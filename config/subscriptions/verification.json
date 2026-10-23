@@ -1,0 +1,8 @@
+{
+  "producer": "verification",
+  "subscriptions": {
+    "dv.jo.verification.completed.v1": [
+      { "name": "core", "url": "http://svc-core.internal/internal/v1/events" }
+    ]
+  }
+}

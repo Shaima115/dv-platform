@@ -1,0 +1,23 @@
+{
+  "name": "@dv/shared",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shared technical infrastructure: token guard, outbox, relay, inbox, logging and tracing.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.6",
+    "@nestjs/core": "^11.1.6",
+    "express": "^5.3.0",
+    "jose": "^5.10.0",
+    "pg": "^8.16.3",
+    "pino": "^9.13.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "uuid": "^11.1.0",
+    "zod": "^3.25.76"
+  }
+}
